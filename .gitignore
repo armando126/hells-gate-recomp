@@ -44,9 +44,16 @@ game/*
 !game/README.md
 
 # --- IDE / editor ---
+local.properties
 .vs/
 .vscode/
 .idea/
+
+# --- Android / Gradle build outputs ---
+android/.gradle/
+android/**/.cxx/
+android/app/build/
+android/build/
 *.user
 *.suo
 *.sln.docstates

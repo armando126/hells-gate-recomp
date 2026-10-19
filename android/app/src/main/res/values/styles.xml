@@ -1,0 +1,7 @@
+<resources>
+    <style name="Theme.HellsGate" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">#B3261E</item>
+        <item name="android:windowFullscreen">true</item>
+    </style>
+</resources>

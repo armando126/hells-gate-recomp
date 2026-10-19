@@ -2,6 +2,8 @@
 
 #if defined(_WIN32)
 #include <windows.h>
+#elif defined(__ANDROID__)
+#include <android/native_window.h>
 #endif
 
 #include "Graphics/GraphicsEngineVulkan/interface/EngineFactoryVk.h"
@@ -162,7 +164,14 @@ bool VulkanDevice::Initialize(void* hwnd, uint32_t width, uint32_t height) {
   sc_desc.DefaultDepthValue = 1.0f;
   sc_desc.IsPrimary = true;
 
+#if defined(__ANDROID__)
+  // Android supplies the ANativeWindow from the Activity/SDL surface. Diligent
+  // uses pAWindow for both OpenGL ES and Vulkan on Android.
+  Diligent::NativeWindow native_window{};
+  native_window.pAWindow = static_cast<ANativeWindow*>(hwnd);
+#else
   Diligent::NativeWindow native_window(hwnd);
+#endif
 
   impl_->factory->CreateSwapChainVk(impl_->device, impl_->context, sc_desc, native_window,
                                     &impl_->swapchain);

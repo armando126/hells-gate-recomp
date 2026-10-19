@@ -209,7 +209,9 @@ if(DANTESINFERNO_NATIVE_RENDERER)
         )
         target_link_libraries(dante_renderer PRIVATE dante_gpu)
         # GDI renders the button glyph labels (button_glyphs.cpp).
-        target_link_libraries(dante_renderer PRIVATE gdi32)
+        if(WIN32)
+            target_link_libraries(dante_renderer PRIVATE gdi32)
+        endif()
 
         # glslang for runtime GLSL->SPIR-V compilation in vulkan_device.cpp
         # (DiligentCore is built with DILIGENT_NO_GLSLANG). ResourceLimits.cpp
