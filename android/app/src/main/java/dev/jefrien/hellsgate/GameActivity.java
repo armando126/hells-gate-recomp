@@ -61,7 +61,7 @@ public final class GameActivity extends SDLActivity implements InputManager.Inpu
         touchControls = new TouchControlsView(this);
         root.addView(touchControls, new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        performanceOverlay = new PerformanceOverlayView(this);
+        performanceOverlay = new PerformanceOverlayView(this, renderer);
         root.addView(performanceOverlay, new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         Log.i(TAG, "Renderer seleccionado: " + renderer);

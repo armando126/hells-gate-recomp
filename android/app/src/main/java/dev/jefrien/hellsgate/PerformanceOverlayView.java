@@ -27,6 +27,7 @@ public final class PerformanceOverlayView extends View {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable updateRunnable = this::updateStats;
     private final int cpuCount = Math.max(1, Runtime.getRuntime().availableProcessors());
+    private final String rendererName;
 
     private long lastCpuNanos;
     private long lastWallNanos;
@@ -46,8 +47,9 @@ public final class PerformanceOverlayView extends View {
     private static native long nativeGetPresentedFrames();
     private static native long nativeGetGuestFrames();
 
-    public PerformanceOverlayView(Context context) {
+    public PerformanceOverlayView(Context context, String rendererName) {
         super(context);
+        this.rendererName = rendererName == null ? "native" : rendererName;
         setWillNotDraw(false);
         setClickable(false);
         setFocusable(false);
@@ -160,11 +162,14 @@ public final class PerformanceOverlayView extends View {
         String temperature = Float.isNaN(cpuTemperature) ? "--" : String.format(Locale.US, "%.1fC", cpuTemperature);
         String batteryTemp = Float.isNaN(batteryTemperature) ? "--" : String.format(Locale.US, "%.1fC", batteryTemperature);
         String battery = batteryPercent < 0 ? "--" : Integer.toString(batteryPercent);
-        canvas.drawText(String.format(Locale.US, "FPS %.1f  PRES %.1f", guestFps, presentFps),
+        canvas.drawText(String.format(Locale.US, "RENDER %s  FPS %.1f",
+                        rendererName.toUpperCase(Locale.US), guestFps),
                 left + 5.0f * density, top + line, textPaint);
-        canvas.drawText(String.format(Locale.US, "CPU %.1f%%  SoC %s", processCpuPercent, temperature),
+        canvas.drawText(String.format(Locale.US, "PRES %.1f  CPU %.1f%%", presentFps,
+                        processCpuPercent),
                 left + 7.0f * density, top + 2.0f * line, textPaint);
-        canvas.drawText("BAT " + battery + "%  " + batteryTemp + "", left + 7.0f * density,
+        canvas.drawText("SoC " + temperature + "  BAT " + battery + "%  " + batteryTemp,
+                left + 7.0f * density,
                 top + 3.0f * line, textPaint);
     }
 }
