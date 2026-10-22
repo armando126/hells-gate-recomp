@@ -31,6 +31,7 @@ public final class GameActivity extends SDLActivity implements InputManager.Inpu
     private String gameRoot;
     private String userRoot;
     private String cacheRoot;
+    private String renderer = "native";
     private TouchControlsView touchControls;
     private PerformanceOverlayView performanceOverlay;
     private InputManager inputManager;
@@ -41,6 +42,8 @@ public final class GameActivity extends SDLActivity implements InputManager.Inpu
         gameRoot = new File(getFilesDir(), "game").getAbsolutePath();
         userRoot = new File(appRoot, "user").getAbsolutePath();
         cacheRoot = new File(appRoot, "cache").getAbsolutePath();
+        String requestedRenderer = getIntent().getStringExtra("renderer");
+        if ("dante".equalsIgnoreCase(requestedRenderer)) renderer = "dante";
         new File(userRoot).mkdirs();
         new File(cacheRoot).mkdirs();
         try {
@@ -61,6 +64,7 @@ public final class GameActivity extends SDLActivity implements InputManager.Inpu
         performanceOverlay = new PerformanceOverlayView(this);
         root.addView(performanceOverlay, new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        Log.i(TAG, "Renderer seleccionado: " + renderer);
         inputManager = (InputManager) getSystemService(INPUT_SERVICE);
         refreshGamepadVisibility();
     }
@@ -192,7 +196,7 @@ public final class GameActivity extends SDLActivity implements InputManager.Inpu
                 // The sidecar default.xexp applies TU2 0.0.2.1 to the base XEX.
                 // Use the upstream native Vulkan graphics-system path rather
                 // than the D3D-hook compatibility renderer on Android.
-                "--renderer=native",
+                "--renderer=" + renderer,
                 // Match the Vulkan/Xenos compatibility profile used by the
                 // working NFSMW Android port on Adreno devices.
                 "--vulkan_native_shader_features=false",
