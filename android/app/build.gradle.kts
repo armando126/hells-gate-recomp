@@ -43,6 +43,7 @@ android {
             cmake {
                 cppFlags += listOf("-std=c++23", "-Wall", "-Wextra")
                 arguments += "-DANDROID_STL=c++_shared"
+                arguments += "-DHELLSGATE_TU2_HOOKS=ON"
             }
         }
     }

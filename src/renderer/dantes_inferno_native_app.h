@@ -1,6 +1,9 @@
 
 #pragma once
 
+#include <atomic>
+#include <cstdint>
+
 #include "dantes_inferno_app.h"
 #include "renderer_config.h"
 
@@ -9,8 +12,14 @@ class DantesInfernoNativeApp : public DantesInfernoApp {
   using DantesInfernoApp::DantesInfernoApp;
 
   static std::unique_ptr<rex::ui::WindowedApp> Create(rex::ui::WindowedAppContext& ctx) {
-    return std::unique_ptr<DantesInfernoNativeApp>(
+    auto app = std::unique_ptr<DantesInfernoNativeApp>(
         new DantesInfernoNativeApp(ctx, "dantes_inferno", PPCImageConfig));
+    instance_.store(app.get(), std::memory_order_release);
+    return app;
+  }
+
+  ~DantesInfernoNativeApp() override {
+    instance_.store(nullptr, std::memory_order_release);
   }
 
   void OnPreSetup(rex::RuntimeConfig& config) override {
@@ -20,4 +29,11 @@ class DantesInfernoNativeApp : public DantesInfernoApp {
       config.graphics = std::move(graphics);
     }
   }
+
+  static DantesInfernoNativeApp* Instance() {
+    return instance_.load(std::memory_order_acquire);
+  }
+
+ private:
+  static inline std::atomic<DantesInfernoNativeApp*> instance_{nullptr};
 };

@@ -31,14 +31,20 @@ public final class PerformanceOverlayView extends View {
     private long lastCpuNanos;
     private long lastWallNanos;
     private long lastPresentedFrames;
+    private long lastGuestFrames;
     private long lastFrameSampleNanos;
-    private float fps;
+    // This is the Android/UI presentation rate, not the guest game's frame
+    // rate.  The overlay can keep presenting while the guest/video thread is
+    // stalled, so never label it as the game's FPS.
+    private float presentFps;
+    private float guestFps;
     private float processCpuPercent;
     private float cpuTemperature = Float.NaN;
     private int batteryPercent = -1;
     private float batteryTemperature = Float.NaN;
 
     private static native long nativeGetPresentedFrames();
+    private static native long nativeGetGuestFrames();
 
     public PerformanceOverlayView(Context context) {
         super(context);
@@ -59,6 +65,7 @@ public final class PerformanceOverlayView extends View {
         lastWallNanos = System.nanoTime();
         lastFrameSampleNanos = lastWallNanos;
         lastPresentedFrames = nativeGetPresentedFrames();
+        lastGuestFrames = nativeGetGuestFrames();
         handler.post(updateRunnable);
     }
 
@@ -80,11 +87,14 @@ public final class PerformanceOverlayView extends View {
         lastCpuNanos = nowCpu;
         lastWallNanos = nowWall;
         long presentedFrames = nativeGetPresentedFrames();
+        long guestFrames = nativeGetGuestFrames();
         long frameWallDelta = nowWall - lastFrameSampleNanos;
         if (frameWallDelta > 0) {
-            fps = (presentedFrames - lastPresentedFrames) * 1_000_000_000.0f / frameWallDelta;
+            presentFps = (presentedFrames - lastPresentedFrames) * 1_000_000_000.0f / frameWallDelta;
+            guestFps = (guestFrames - lastGuestFrames) * 1_000_000_000.0f / frameWallDelta;
         }
         lastPresentedFrames = presentedFrames;
+        lastGuestFrames = guestFrames;
         lastFrameSampleNanos = nowWall;
         cpuTemperature = readCpuTemperature();
         readBattery();
@@ -150,11 +160,11 @@ public final class PerformanceOverlayView extends View {
         String temperature = Float.isNaN(cpuTemperature) ? "--" : String.format(Locale.US, "%.1fC", cpuTemperature);
         String batteryTemp = Float.isNaN(batteryTemperature) ? "--" : String.format(Locale.US, "%.1fC", batteryTemperature);
         String battery = batteryPercent < 0 ? "--" : Integer.toString(batteryPercent);
-        canvas.drawText(String.format(Locale.US, "FPS %.1f  CPU %.1f%%", fps, processCpuPercent),
+        canvas.drawText(String.format(Locale.US, "FPS %.1f  PRES %.1f", guestFps, presentFps),
                 left + 5.0f * density, top + line, textPaint);
-        canvas.drawText("SoC " + temperature + "  BAT " + battery + "%", left + 7.0f * density,
-                top + 2.0f * line, textPaint);
-        canvas.drawText("BatTemp " + batteryTemp, left + 7.0f * density,
+        canvas.drawText(String.format(Locale.US, "CPU %.1f%%  SoC %s", processCpuPercent, temperature),
+                left + 7.0f * density, top + 2.0f * line, textPaint);
+        canvas.drawText("BAT " + battery + "%  " + batteryTemp + "", left + 7.0f * density,
                 top + 3.0f * line, textPaint);
     }
 }

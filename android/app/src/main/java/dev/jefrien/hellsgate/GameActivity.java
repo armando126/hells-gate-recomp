@@ -5,6 +5,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.system.ErrnoException;
 import android.system.Os;
+import android.graphics.Color;
 import android.util.Log;
 import android.view.Display;
 import android.view.InputDevice;
@@ -13,6 +14,7 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
+import android.widget.RelativeLayout;
 import android.hardware.input.InputManager;
 
 import org.libsdl.app.SDLActivity;
@@ -52,6 +54,7 @@ public final class GameActivity extends SDLActivity implements InputManager.Inpu
         useWholeScreenAtGameRefresh();
         applyInternalSurfaceSize();
         ViewGroup root = findViewById(android.R.id.content);
+        root.setBackgroundColor(Color.BLACK);
         touchControls = new TouchControlsView(this);
         root.addView(touchControls, new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
@@ -73,12 +76,31 @@ public final class GameActivity extends SDLActivity implements InputManager.Inpu
 
     private void applyInternalSurfaceSize() {
         if (mSurface != null) {
-            ViewGroup.LayoutParams layout = mSurface.getLayoutParams();
-            layout.width = ViewGroup.LayoutParams.MATCH_PARENT;
-            layout.height = ViewGroup.LayoutParams.MATCH_PARENT;
+            View parent = (View) mSurface.getParent();
+            int availableWidth = parent != null ? parent.getWidth() : 0;
+            int availableHeight = parent != null ? parent.getHeight() : 0;
+            if (availableWidth <= 0 || availableHeight <= 0) {
+                availableWidth = getResources().getDisplayMetrics().widthPixels;
+                availableHeight = getResources().getDisplayMetrics().heightPixels;
+            }
+
+            // The game is authored for 16:9. Keep the SurfaceView's viewport
+            // proportional on the phone's wider landscape panel and let the
+            // black background form pillarbox bars instead of stretching it.
+            int viewportWidth = availableWidth;
+            int viewportHeight = Math.round(viewportWidth * 9.0f / 16.0f);
+            if (viewportHeight > availableHeight) {
+                viewportHeight = availableHeight;
+                viewportWidth = Math.round(viewportHeight * 16.0f / 9.0f);
+            }
+
+            RelativeLayout.LayoutParams layout = new RelativeLayout.LayoutParams(
+                    viewportWidth, viewportHeight);
+            layout.addRule(RelativeLayout.CENTER_IN_PARENT, RelativeLayout.TRUE);
             mSurface.setLayoutParams(layout);
             mSurface.getHolder().setFixedSize(INTERNAL_WIDTH, INTERNAL_HEIGHT);
-            Log.i(TAG, "Internal game surface: " + INTERNAL_WIDTH + "x" + INTERNAL_HEIGHT);
+            Log.i(TAG, "Game viewport: " + viewportWidth + "x" + viewportHeight
+                    + " buffer=" + INTERNAL_WIDTH + "x" + INTERNAL_HEIGHT);
         }
     }
 
@@ -167,9 +189,10 @@ public final class GameActivity extends SDLActivity implements InputManager.Inpu
                 // game then selects the corresponding text/audio tables.
                 "--user_language=5",
                 "--user_country=31",
-                // The base XEX uses the SDK Xenos renderer. The native Dante
-                // D3D hooks currently target TU2 addresses.
-                "--renderer=xenos",
+                // The sidecar default.xexp applies TU2 0.0.2.1 to the base XEX.
+                // Use the upstream native Vulkan graphics-system path rather
+                // than the D3D-hook compatibility renderer on Android.
+                "--renderer=native",
                 // Match the Vulkan/Xenos compatibility profile used by the
                 // working NFSMW Android port on Adreno devices.
                 "--vulkan_native_shader_features=false",
@@ -188,6 +211,10 @@ public final class GameActivity extends SDLActivity implements InputManager.Inpu
                 // padded vertex fetches during the intro. Keep the diagnostic
                 // scan off on Android so it cannot flood the render thread.
                 "--vfetch_oob_trace=false",
+                // Keep a small audio cushion for the game's 256-sample bursts.
+                // Ten frames is still low-latency (~53 ms at 48 kHz) but avoids
+                // starving the stereo Android output during shader/video bursts.
+                "--audio_maxqframes=10",
                 // Synchronous creation is slower during the first load, but
                 // is required by this Adreno path to present the first frame.
                 "--async_shader_compilation=false",

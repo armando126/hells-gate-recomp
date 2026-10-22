@@ -13,6 +13,7 @@
 #include "user_paths.h"
 
 #include "dantes_inferno_funcs.h"
+#include "guest_memory.h"
 
 #include <rex/chrono/clock.h>
 #include <rex/cvar.h>
@@ -266,6 +267,17 @@ class DantesInfernoApp : public rex::ReXApp {
     const bool is_tu2 = dispatcher && dispatcher->GetFunction(0x82879110);
     uint32_t slot = is_tu2 ? 0x82CE68E4u : 0x82B101E4u;
     *reinterpret_cast<uint32_t*>(membase + slot) = 0u;
+
+#if REX_PLATFORM_ANDROID
+    if (is_tu2) {
+      // TU2 embeds the callback-list sentinel in guest data, but the
+      // recompiler starts the image from zeroed memory on Android. The first
+      // xstart callback walk otherwise follows a null/stale head forever.
+      guest::Store32(membase, 0x8296E984u, 0x8296E984u);
+      HellsgateAndroidLog("TU2 startup: callback-list head=0x%08X sentinel=0x8296E984",
+                          guest::Load32(membase, 0x8296E984u));
+    }
+#endif
 
 #if REX_PLATFORM_ANDROID
     if (is_tu2 && dispatcher) {
@@ -618,6 +630,13 @@ class DantesInfernoApp : public rex::ReXApp {
     shader_progress_.reset();
     rex::chrono::Clock::set_guest_time_scalar(1.0);
     rex::cvar::SetFlagByName("vsync", saved_vsync_ ? "true" : "false");
+  }
+
+  // Counts guest VdSwap/XE_GPU_SWAP boundaries, independent of Android's
+  // display compositor and any frames it may repeat while the guest stalls.
+  uint64_t GuestFrameCountForAndroid() {
+    auto* command_processor = GetCommandProcessor();
+    return command_processor ? command_processor->swap_counter() : 0;
   }
 
  private:

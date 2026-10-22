@@ -155,8 +155,11 @@ target_compile_options(hells_gate_recompiled PRIVATE -g0)
 add_library(hells_gate_android SHARED android_bridge.cpp)
 target_sources(hells_gate_android PRIVATE android_touch.cpp)
 target_include_directories(hells_gate_android PRIVATE
+    "${HELLS_GATE_ROOT}"
     "${HELLS_GATE_ROOT}/src"
+    "${HELLS_GATE_ROOT}/generated/default"
     "${HELLS_GATE_ROOT}/thirdparty/rexglue-sdk/include"
+    "${HELLS_GATE_ROOT}/thirdparty/rexglue-sdk/thirdparty/simde"
     "${HELLS_GATE_ROOT}/thirdparty/rexglue-sdk/thirdparty/imgui"
     "${HELLS_GATE_ROOT}/thirdparty/rexglue-sdk/thirdparty/fmt/include"
     "${HELLS_GATE_ROOT}/thirdparty/rexglue-sdk/thirdparty/spdlog/include")

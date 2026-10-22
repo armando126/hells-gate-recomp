@@ -10,6 +10,8 @@
 #if REX_PLATFORM_ANDROID
 
 REX_EXTERN(__imp__sub_8281D8E0);
+REX_EXTERN(__imp__sub_82820600);
+REX_EXTERN(__imp__sub_82820450);
 
 REX_HOOK_RAW(sub_8281D8E0) {
   REXLOG_INFO("Android startup compatibility hook entered");
@@ -20,6 +22,20 @@ REX_HOOK_RAW(sub_8281D8E0) {
     REXLOG_WARN("Android startup compatibility: forcing success");
     ctx.r3.u64 = 0;
   }
+}
+
+REX_HOOK_RAW(sub_82820600) {
+  REXLOG_INFO("Android startup trace: sub_82820600 enter r1={:#x} r3={:#x}", ctx.r1.u32,
+              ctx.r3.u32);
+  __imp__sub_82820600(ctx, base);
+  REXLOG_INFO("Android startup trace: sub_82820600 return r3={:#x}", ctx.r3.u32);
+}
+
+REX_HOOK_RAW(sub_82820450) {
+  REXLOG_INFO("Android startup trace: sub_82820450 enter r1={:#x} r3={:#x}", ctx.r1.u32,
+              ctx.r3.u32);
+  __imp__sub_82820450(ctx, base);
+  REXLOG_INFO("Android startup trace: sub_82820450 return r3={:#x}", ctx.r3.u32);
 }
 
 #endif
