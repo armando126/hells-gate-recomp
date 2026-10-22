@@ -25,6 +25,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     defaultConfig {
@@ -49,6 +50,10 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
+            // Development convenience: keep Release updates compatible with
+            // the debug APK already installed on the test device. Replace
+            // this with a private release keystore before publishing.
+            signingConfig = signingConfigs.getByName("debug")
             externalNativeBuild {
                 cmake {
                     arguments += "-DCMAKE_BUILD_TYPE=Release"

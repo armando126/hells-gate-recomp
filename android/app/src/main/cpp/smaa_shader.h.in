@@ -1,0 +1,5 @@
+#pragma once
+
+#define SMAA_SHADER_SOURCE R"__RECOMP_SMAA__(
+@SMAA_SHADER_TEXT@
+)__RECOMP_SMAA__"

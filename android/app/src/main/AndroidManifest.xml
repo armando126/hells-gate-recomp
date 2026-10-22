@@ -2,17 +2,23 @@
     <application
         android:allowBackup="false"
         android:label="Hell's Gate"
+        android:isGame="true"
         android:supportsRtl="true"
         android:theme="@style/Theme.HellsGate">
         <activity
             android:name=".MainActivity"
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:exported="true"
-            android:screenOrientation="landscape">
+            android:screenOrientation="sensorLandscape">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity
+            android:name=".GameActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode"
+            android:exported="true"
+            android:screenOrientation="sensorLandscape" />
     </application>
 </manifest>

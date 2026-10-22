@@ -287,6 +287,10 @@ def patch_unresolved(files, contents, gen_dir):
                 skipped.append(m.group(2).upper())
                 return m.group(0)
             target = m.group(2).upper()
+            loc_name = f'loc_{target}'
+            if re.search(rf'\b{re.escape(loc_name)}\s*:', content):
+                patched_count += 1
+                return f'// b 0x{target}\n\tgoto {loc_name};'
             if target in registered_funcs:
                 func_name = registered_funcs[target]
                 patched_count += 1

@@ -1,5 +1,7 @@
 #include "renderdoc_capture.h"
 
+#if defined(_WIN32)
+
 #include <rex/cvar.h>
 #include <rex/logging/macros.h>
 
@@ -61,3 +63,13 @@ void RenderDocOnGuestSwap() {
 }
 
 }  // namespace renderer
+
+#else
+
+namespace renderer {
+
+void RenderDocOnGuestSwap() {}
+
+}  // namespace renderer
+
+#endif

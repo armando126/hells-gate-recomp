@@ -21,8 +21,11 @@
 #include <xxhash.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -116,6 +119,32 @@ std::vector<uint32_t> PrepareSpirvForDiligent(const std::vector<uint8_t>& binary
   return out;
 }
 
+constexpr uint32_t kPersistentShaderCacheMagic = 0x31485344;  // DSH1
+constexpr uint32_t kPersistentShaderCacheVersion = 1;
+
+struct PersistentShaderHeader {
+  uint32_t magic;
+  uint32_t version;
+  uint64_t key;
+  uint32_t word_count;
+  uint32_t reserved;
+  uint64_t checksum;
+};
+
+uint32_t FloatBits(float value) {
+  uint32_t bits = 0;
+  std::memcpy(&bits, &value, sizeof(bits));
+  return bits;
+}
+
+uint64_t PersistentShaderKey(uint64_t hash, uint64_t modification, bool is_vertex,
+                             float scale_x, float scale_y) {
+  const std::array<uint64_t, 5> values = {
+      hash, modification, uint64_t(is_vertex), uint64_t(FloatBits(scale_x)),
+      uint64_t(FloatBits(scale_y))};
+  return XXH3_64bits(values.data(), sizeof(values));
+}
+
 struct GuestShader {
   std::unique_ptr<rg::SpirvShader> shader;
   // Per modification: compiled shader, or null after a failure.
@@ -148,8 +177,87 @@ struct ShaderCache::Impl {
   std::unique_ptr<rg::SpirvShaderTranslator> translator;
   rex::string::StringBuffer disasm_buffer;
   std::unordered_map<uint64_t, GuestShader> shaders;  // by ucode hash
+  std::filesystem::path persistent_directory;
+  std::mutex persistent_mutex;
+  std::unordered_map<uint64_t, std::vector<uint32_t>> persistent_spirv;
   std::atomic<uint32_t> translated{0};
   std::atomic<uint32_t> failed{0};
+  std::atomic<uint32_t> persistent_hits{0};
+  std::atomic<uint32_t> persistent_misses{0};
+
+  bool LoadPersistent(uint64_t key, std::vector<uint32_t>& spirv) {
+    if (persistent_directory.empty()) return false;
+    std::lock_guard lock(persistent_mutex);
+    auto memory = persistent_spirv.find(key);
+    if (memory != persistent_spirv.end()) {
+      spirv = memory->second;
+      ++persistent_hits;
+      return true;
+    }
+
+    const auto path = persistent_directory / fmt::format("{:016X}.spv", key);
+    std::FILE* file = std::fopen(path.string().c_str(), "rb");
+    if (!file) {
+      ++persistent_misses;
+      return false;
+    }
+    PersistentShaderHeader header{};
+    const bool header_ok = std::fread(&header, sizeof(header), 1, file) == 1;
+    const bool size_ok = header_ok && header.magic == kPersistentShaderCacheMagic &&
+                         header.version == kPersistentShaderCacheVersion && header.key == key &&
+                         header.word_count > 0 && header.word_count <= (1u << 20);
+    if (!size_ok) {
+      std::fclose(file);
+      ++persistent_misses;
+      return false;
+    }
+    spirv.resize(header.word_count);
+    const bool data_ok = std::fread(spirv.data(), sizeof(uint32_t), spirv.size(), file) ==
+                         spirv.size();
+    std::fclose(file);
+    if (!data_ok || XXH3_64bits(spirv.data(), spirv.size() * sizeof(uint32_t)) !=
+                        header.checksum) {
+      spirv.clear();
+      ++persistent_misses;
+      return false;
+    }
+    persistent_spirv.emplace(key, spirv);
+    ++persistent_hits;
+    return true;
+  }
+
+  void SavePersistent(uint64_t key, const std::vector<uint32_t>& spirv) {
+    if (persistent_directory.empty() || spirv.empty()) return;
+    std::lock_guard lock(persistent_mutex);
+    if (persistent_spirv.contains(key)) return;
+    std::error_code ec;
+    std::filesystem::create_directories(persistent_directory, ec);
+    if (ec) return;
+
+    const auto path = persistent_directory / fmt::format("{:016X}.spv", key);
+    const auto temp = persistent_directory / fmt::format("{:016X}.tmp", key);
+    PersistentShaderHeader header{
+        kPersistentShaderCacheMagic,
+        kPersistentShaderCacheVersion,
+        key,
+        uint32_t(spirv.size()),
+        0,
+        XXH3_64bits(spirv.data(), spirv.size() * sizeof(uint32_t)),
+    };
+    if (std::FILE* file = std::fopen(temp.string().c_str(), "wb")) {
+      const bool ok = std::fwrite(&header, sizeof(header), 1, file) == 1 &&
+                      std::fwrite(spirv.data(), sizeof(uint32_t), spirv.size(), file) ==
+                          spirv.size();
+      std::fclose(file);
+      if (ok) {
+        std::filesystem::rename(temp, path, ec);
+        if (ec) std::filesystem::remove(temp, ec);
+        else persistent_spirv.emplace(key, spirv);
+      } else {
+        std::filesystem::remove(temp, ec);
+      }
+    }
+  }
 
   GuestShader& Load(rg::xenos::ShaderType type, const GuestShaderCode& code, uint64_t& hash) {
     hash = XXH3_64bits(code.ucode, code.dwords * sizeof(uint32_t));
@@ -185,16 +293,24 @@ struct ShaderCache::Impl {
   dl::IShader* Build(GuestShader& entry, uint64_t modification, uint64_t hash,
                      rg::SpirvShaderTranslator& translator) {
     dl::RefCntAutoPtr<dl::IShader> result;
-    auto* translation = entry.shader->GetOrCreateTranslation(modification);
-    if (!translation->is_translated()) translator.TranslateAnalyzedShader(*translation);
     const bool is_vertex = entry.shader->type() == rg::xenos::ShaderType::kVertex;
-    if (translation->is_valid() && !translation->translated_binary().empty()) {
+    const uint64_t persistent_key =
+        PersistentShaderKey(hash, modification, is_vertex, scale_x, scale_y);
+    std::vector<uint32_t> spirv;
+    const bool persistent_hit = LoadPersistent(persistent_key, spirv);
+    auto* translation = entry.shader->GetOrCreateTranslation(modification);
+    if (!persistent_hit) {
+      if (!translation->is_translated()) translator.TranslateAnalyzedShader(*translation);
+      if (translation->is_valid() && !translation->translated_binary().empty()) {
+        spirv = PrepareSpirvForDiligent(translation->translated_binary(), is_vertex);
+        SavePersistent(persistent_key, spirv);
+      }
+    }
+    if (!spirv.empty()) {
       dl::ShaderCreateInfo ci;
       ci.Desc.ShaderType = is_vertex ? dl::SHADER_TYPE_VERTEX : dl::SHADER_TYPE_PIXEL;
       ci.Desc.Name = is_vertex ? "XenosVS" : "XenosPS";
       ci.EntryPoint = "main";
-      std::vector<uint32_t> spirv =
-          PrepareSpirvForDiligent(translation->translated_binary(), is_vertex);
       ci.ByteCode = spirv.data();
       ci.ByteCodeSize = spirv.size() * sizeof(uint32_t);
       device->CreateShader(ci, &result);
@@ -302,7 +418,14 @@ bool ShaderCache::Prepare(const rg::RegisterFile& regs, const GuestShaderCode& v
   return out.vertex != nullptr;
 }
 
-void ShaderCache::SetStorage(PipelineStorage* storage) { impl_->storage = storage; }
+void ShaderCache::SetStorage(PipelineStorage* storage) {
+  impl_->storage = storage;
+  impl_->persistent_directory = storage ? storage->path().parent_path() / "shader_spirv"
+                                        : std::filesystem::path{};
+  if (!impl_->persistent_directory.empty()) {
+    REXLOG_INFO("NATIVE-SH persistent SPIR-V cache: {}", impl_->persistent_directory.string());
+  }
+}
 
 void ShaderCache::Precompile(const std::vector<StoredShader>& shaders,
                              const ShaderVariants& variants, uint32_t threads,
@@ -348,6 +471,8 @@ bool ShaderCache::Find(uint64_t hash, uint64_t modification, dl::IShader*& shade
 void ShaderCache::LogStats() {
   REXLOG_INFO("NATIVE-SH guest shaders={} compiled={} failed={}", impl_->shaders.size(),
               impl_->translated.load(), impl_->failed.load());
+  REXLOG_INFO("NATIVE-SH persistent SPIR-V hits={} misses={}", impl_->persistent_hits.load(),
+              impl_->persistent_misses.load());
 }
 
 }  // namespace renderer

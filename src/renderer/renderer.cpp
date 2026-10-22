@@ -1336,7 +1336,7 @@ void PresentTestPattern() {
   g_device->BeginFrame();
   g_device->Clear(0.3f + 0.3f * std::sin(phase), 0.3f + 0.3f * std::sin(phase + 2.0943951f),
                   0.3f + 0.3f * std::sin(phase + 4.1887902f), 1.0f);
-  g_device->Present(0);
+  g_device->Present(rex::cvar::Query<bool>("vsync") ? 1 : 0);
 }
 
 }  // namespace
@@ -1874,10 +1874,11 @@ void AfterSwap(const CallArgs& a, const uint8_t* base, bool log_next_frame) {
                 g_draws_unparsed);
   }
   if (!g_device->UpdateWindowSize()) return;  // minimized
+  const uint32_t present_sync_interval = rex::cvar::Query<bool>("vsync") ? 1 : 0;
   if (debug_view) {
-    g_device->PresentTexture(debug_view, 0);
+    g_device->PresentTexture(debug_view, present_sync_interval);
   } else if (front_view) {
-    g_device->PresentTexture(front_view, 0);
+    g_device->PresentTexture(front_view, present_sync_interval);
   } else {
     PresentTestPattern();
   }

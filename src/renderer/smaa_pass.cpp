@@ -1,6 +1,7 @@
 #include "smaa_pass.h"
 
 #include "vulkan_device.h"
+#include "smaa_shader.h"
 
 #include "Common/interface/RefCntAutoPtr.hpp"
 #include "Graphics/GraphicsEngine/interface/Buffer.h"
@@ -27,12 +28,7 @@ namespace {
 
 namespace dl = Diligent;
 
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wc23-extensions"
-constexpr char kSmaaSource[] = {
-#embed "../../thirdparty/smaa/SMAA.hlsl"
-    , 0};
-#pragma clang diagnostic pop
+constexpr char kSmaaSource[] = SMAA_SHADER_SOURCE;
 
 // SMAA's custom shading-language hooks: separate textures and samplers.
 constexpr char kPrelude[] = R"(#version 450

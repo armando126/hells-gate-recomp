@@ -12,6 +12,8 @@
 #include "timer_resolution.h"
 #include "user_paths.h"
 
+#include "dantes_inferno_funcs.h"
+
 #include <rex/chrono/clock.h>
 #include <rex/cvar.h>
 #include <rex/filesystem.h>
@@ -30,6 +32,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdarg>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -38,6 +41,10 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#if REX_PLATFORM_ANDROID
+#include <android/log.h>
+#endif
 
 REXCVAR_DEFINE_DOUBLE(time_scalar, 1.0, "Gameplay",
                       "Guest time scaling factor (1.0 = normal, 50.0 = fast-forward)");
@@ -68,6 +75,35 @@ REXCVAR_DEFINE_STRING(dlc_source_path, "dlc", "Content",
                       "Folder scanned for DLC packages to auto-install on launch. "
                       "If empty or missing, the game runs without DLC.");
 
+#if REX_PLATFORM_ANDROID
+extern "C" void hellsgate_android_apply_fast_cores();
+
+inline void HellsgateAndroidLog(const char* format, ...) {
+  va_list args;
+  va_start(args, format);
+  __android_log_vprint(ANDROID_LOG_INFO, "HellsgateNative", format, args);
+  va_end(args);
+}
+
+// The TU2 XEX entrypoint is not the generated xstart routine. Keep the
+// original generated target behind a native wrapper so we can distinguish a
+// dispatcher failure from an abort inside the guest startup code.
+inline PPCFunc* g_tu2_xstart_target = nullptr;
+
+inline void Tu2EntryTrampoline(PPCContext& ctx, uint8_t* base) {
+  HellsgateAndroidLog("TU2 trampoline: entered r1=0x%08X r3=0x%08X r27=0x%08X r31=0x%08X",
+                      ctx.r1.u32, ctx.r3.u32, ctx.r27.u32, ctx.r31.u32);
+  auto* target = g_tu2_xstart_target;
+  if (!target) {
+    HellsgateAndroidLog("TU2 trampoline: xstart target is null");
+    return;
+  }
+  HellsgateAndroidLog("TU2 trampoline: calling xstart");
+  target(ctx, base);
+  HellsgateAndroidLog("TU2 trampoline: xstart returned r3=0x%08X", ctx.r3.u32);
+}
+#endif
+
 class DantesInfernoApp : public rex::ReXApp {
  public:
   using rex::ReXApp::ReXApp;
@@ -84,6 +120,9 @@ class DantesInfernoApp : public rex::ReXApp {
     const std::filesystem::path candidates[] = {
         rex::filesystem::GetExecutableFolder() / "game",
         std::filesystem::current_path() / "game",
+#if REX_PLATFORM_ANDROID
+        rex::filesystem::GetUserFolder().parent_path().parent_path() / "files" / "game",
+#endif
     };
     for (const auto& candidate : candidates) {
       std::error_code ec;
@@ -113,6 +152,11 @@ class DantesInfernoApp : public rex::ReXApp {
 
   void OnPreSetup(rex::RuntimeConfig& config) override {
     config.gpu_plugin = "xenos";
+
+#if REX_PLATFORM_ANDROID
+    const std::string startup_renderer = rex::cvar::Query<std::string>("renderer");
+    HellsgateAndroidLog("OnPreSetup renderer=%s", startup_renderer.c_str());
+#endif
 
     REXCVAR_SET(input_backend, std::string("sdl"));
 
@@ -159,9 +203,21 @@ class DantesInfernoApp : public rex::ReXApp {
     }
   }
 
+  void OnPostInitLogging() override {
+#if REX_PLATFORM_ANDROID
+    // Do this before the guest thread and renderer/audio workers are created;
+    // newly-created threads inherit the mask.
+    hellsgate_android_apply_fast_cores();
+#endif
+  }
+
   // The game starts once the renderer has built the recorded shaders and
   // pipelines (renderer::Start). Elsewhere its first draw waits for them.
   void OnPostLaunchModule(rex::system::XThread* thread) override {
+#if REX_PLATFORM_ANDROID
+    HellsgateAndroidLog("OnPostLaunchModule thread=%p precompile_active=%s", static_cast<void*>(thread),
+                        renderer::GetPrecompileStatus().active ? "true" : "false");
+#endif
 #if REX_PLATFORM_WIN32
     if (thread && renderer::GetPrecompileStatus().active) {
       thread->Suspend();
@@ -176,13 +232,29 @@ class DantesInfernoApp : public rex::ReXApp {
     }
 #else
     (void)thread;
+#if REX_PLATFORM_ANDROID
+    HellsgateAndroidLog("OnPostLaunchModule: scheduling precompile completion callback");
+#endif
     renderer::RunWhenPrecompiled([this] {
+#if REX_PLATFORM_ANDROID
+      HellsgateAndroidLog("Precompile completion callback fired");
+#endif
       app_context().CallInUIThread([this] {
         if (!shutting_down_) shader_progress_.reset();
       });
     });
 #endif
     if (!renderer::GetPrecompileStatus().active) shader_progress_.reset();
+#if REX_PLATFORM_ANDROID
+    HellsgateAndroidLog("OnPostLaunchModule: returning; guest thread will resume");
+#endif
+  }
+
+  void OnGuestThreadExit(rex::system::XThread* thread) override {
+#if REX_PLATFORM_ANDROID
+    HellsgateAndroidLog("OnGuestThreadExit thread=%p", static_cast<void*>(thread));
+#endif
+    rex::ReXApp::OnGuestThreadExit(thread);
   }
 
   void OnPreLaunchModule() override {
@@ -194,6 +266,20 @@ class DantesInfernoApp : public rex::ReXApp {
     const bool is_tu2 = dispatcher && dispatcher->GetFunction(0x82879110);
     uint32_t slot = is_tu2 ? 0x82CE68E4u : 0x82B101E4u;
     *reinterpret_cast<uint32_t*>(membase + slot) = 0u;
+
+#if REX_PLATFORM_ANDROID
+    if (is_tu2 && dispatcher) {
+      // Diagnostic trampoline: TU2 advertises 0x826A6790 as its XEX entrypoint,
+      // but that generated body expects caller state that XThread does not set.
+      // Route it through the normal generated xstart path without fabricating
+      // r27/r31 values. This is intentionally easy to remove after validation.
+      auto* xstart = dispatcher->GetFunction(0x8281DAC8u);
+      g_tu2_xstart_target = xstart;
+      const bool remapped = xstart && dispatcher->SetFunction(0x826A6790u, &Tu2EntryTrampoline);
+      HellsgateAndroidLog("TU2 entry trampoline remapped=%s target_present=%s",
+                          remapped ? "true" : "false", xstart ? "true" : "false");
+    }
+#endif
 
     if (REXCVAR_GET(dlc_dump_image)) {
       std::filesystem::path dump_path =
@@ -213,8 +299,19 @@ class DantesInfernoApp : public rex::ReXApp {
     timer_resolution::Apply();
     user_paths::Report(user_data_root());
     renderer::ConfigureSyncOnlyGpu();
-    if (rex::cvar::Query<std::string>("renderer") == "dante") {
-      renderer::Start(window(), cache_root());
+    const std::string renderer_name = rex::cvar::Query<std::string>("renderer");
+    REXLOG_INFO("SESSION: renderer={} game_data_root={} cache_root={}", renderer_name,
+                game_data_root().string(), cache_root().string());
+#if REX_PLATFORM_ANDROID
+    HellsgateAndroidLog("OnPostSetup renderer=%s", renderer_name.c_str());
+#endif
+    if (renderer_name == "dante") {
+      REXLOG_INFO("Dante Android: native Vulkan renderer selected");
+      const bool renderer_started = renderer::Start(window(), cache_root());
+#if REX_PLATFORM_ANDROID
+      HellsgateAndroidLog("Dante renderer start=%s window=%p", renderer_started ? "ok" : "failed",
+                          static_cast<void*>(window()));
+#endif
       // The SDK presenter is detached: ImGui records on the UI thread and the
       // renderer draws the overlay over each presented frame.
       if (imgui_drawer()) {
