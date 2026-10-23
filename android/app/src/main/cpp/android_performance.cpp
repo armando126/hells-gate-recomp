@@ -18,7 +18,7 @@
 #include <rex/logging.h>
 
 REXCVAR_DEFINE_BOOL(hellsgate_android_fast_cores, true, "Android",
-                    "Use Android fast CPU cores (at least 70% of the fastest clock)")
+                    "Use Android performance CPU cores while avoiding the hottest prime core")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 
 namespace {
@@ -29,7 +29,6 @@ long MaxClockKhz(int cpu) {
   long khz = 0;
   return (file >> khz) ? khz : 0;
 }
-
 }  // namespace
 
 extern "C" void hellsgate_android_apply_fast_cores() {
@@ -49,12 +48,25 @@ extern "C" void hellsgate_android_apply_fast_cores() {
     return;
   }
 
+  std::vector<long> clusters;
+  for (long clock : clocks) {
+    if (clock > 0 && std::find(clusters.begin(), clusters.end(), clock) == clusters.end()) {
+      clusters.push_back(clock);
+    }
+  }
+  std::sort(clusters.rbegin(), clusters.rend());
+  const bool use_second_cluster = clusters.size() >= 3;
+  const long selected_clock = use_second_cluster ? clusters[1] : 0;
+
   cpu_set_t mask;
   CPU_ZERO(&mask);
   int selected = 0;
   std::string cpu_list;
   for (int cpu = 0; cpu < total; ++cpu) {
-    if (clocks[static_cast<size_t>(cpu)] * 10 >= fastest * 7) {
+    const long clock = clocks[static_cast<size_t>(cpu)];
+    const bool is_fast = use_second_cluster ? clock == selected_clock
+                                            : clock * 10 >= fastest * 7;
+    if (is_fast) {
       CPU_SET(cpu, &mask);
       ++selected;
       cpu_list += (cpu_list.empty() ? "" : ",") + std::to_string(cpu);
@@ -71,6 +83,7 @@ extern "C" void hellsgate_android_apply_fast_cores() {
     const pid_t tid = static_cast<pid_t>(std::strtol(task.path().filename().c_str(), nullptr, 10));
     if (tid > 0 && sched_setaffinity(tid, sizeof(mask), &mask) == 0) ++moved;
   }
-  REXLOG_INFO("[android] fast CPUs {} of {} (>=70% of {} MHz); moved {} threads", cpu_list,
-              total, fastest / 1000, moved);
+  REXLOG_INFO("[android] performance CPUs {} of {} ({}; fastest {} MHz); moved {} threads",
+              cpu_list, total, use_second_cluster ? "second clock cluster" : ">=70% fastest",
+              fastest / 1000, moved);
 }

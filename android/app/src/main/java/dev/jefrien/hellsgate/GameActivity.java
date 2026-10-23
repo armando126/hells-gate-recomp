@@ -16,6 +16,7 @@ import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.widget.RelativeLayout;
 import android.hardware.input.InputManager;
+import android.content.SharedPreferences;
 
 import org.libsdl.app.SDLActivity;
 
@@ -26,15 +27,24 @@ public final class GameActivity extends SDLActivity implements InputManager.Inpu
     private static final String TAG = "Hellsgate";
     // Keep the SurfaceView full-screen, but render the game into a smaller buffer.
     // 1280x720 preserves the game's 16:9 content while minimizing the Adreno workload.
+    // Stable working resolution for the Android Vulkan path.
     private static final int INTERNAL_WIDTH = 1280;
     private static final int INTERNAL_HEIGHT = 720;
     private String gameRoot;
     private String userRoot;
     private String cacheRoot;
-    private String renderer = "native";
+    // android-dante is the working native Vulkan renderer on Android. The
+    // SDK graphics-system path remains selectable through the launch intent.
+    private String renderer = "android-dante";
     private TouchControlsView touchControls;
     private PerformanceOverlayView performanceOverlay;
     private InputManager inputManager;
+    private boolean settingVsync;
+    private boolean settingAsyncShaders;
+    private boolean settingFastCores;
+    private int settingAnisotropic;
+    private int settingAudioFrames;
+    private int settingPipelineThreads;
 
     @Override
     protected void onCreate(Bundle state) {
@@ -43,9 +53,24 @@ public final class GameActivity extends SDLActivity implements InputManager.Inpu
         userRoot = new File(appRoot, "user").getAbsolutePath();
         cacheRoot = new File(appRoot, "cache").getAbsolutePath();
         String requestedRenderer = getIntent().getStringExtra("renderer");
-        if ("dante".equalsIgnoreCase(requestedRenderer)) renderer = "dante";
+        if ("dante".equalsIgnoreCase(requestedRenderer)
+                || "android-dante".equalsIgnoreCase(requestedRenderer)) {
+            renderer = "android-dante".equalsIgnoreCase(requestedRenderer)
+                    ? "android-dante" : "dante";
+        } else if ("xenos".equalsIgnoreCase(requestedRenderer)) {
+            renderer = "xenos";
+        } else if ("native".equalsIgnoreCase(requestedRenderer)) {
+            renderer = "native";
+        }
         new File(userRoot).mkdirs();
         new File(cacheRoot).mkdirs();
+        SharedPreferences settings = getSharedPreferences("performance", MODE_PRIVATE);
+        settingVsync = settings.getBoolean("vsync", true);
+        settingAsyncShaders = settings.getBoolean("async_shaders", false);
+        settingFastCores = settings.getBoolean("fast_cores", true);
+        settingAnisotropic = settings.getInt("anisotropic", 0);
+        settingAudioFrames = settings.getInt("audio_frames", 10);
+        settingPipelineThreads = settings.getInt("pipeline_threads", -1);
         try {
             // ReXGlue uses this folder for logs, settings and the Vulkan cache.
             Os.setenv("REX_APP_FOLDER", userRoot, true);
@@ -197,20 +222,58 @@ public final class GameActivity extends SDLActivity implements InputManager.Inpu
                 // Use the upstream native Vulkan graphics-system path rather
                 // than the D3D-hook compatibility renderer on Android.
                 "--renderer=" + renderer,
+                // Do not render at the phone's 2780px physical width. The
+                // Stable working resolution for the Android Dante path.
+                "--dante_resolution=1280x720",
+                // Keep shadow maps at the game resolution instead of 2x; this
+                // is a large GPU/bandwidth reduction on high-density phones.
+                "--dante_shadow_scale=1",
+                // Keep the guest/renderer/audio threads on the fast CPU cluster.
+                // This is the first isolated performance experiment; compare
+                // frame pacing and SoC temperature against the unpinned build.
+                "--hellsgate_android_fast_cores=" + settingFastCores,
+                // Always present the resolved front buffer on Android. A previous
+                // diagnostic value could remain in the runtime configuration and
+                // select an intermediate render target, which produces audio with
+                // a black screen even though NATIVE-PRESENT reports success.
+                "--dante_debug_view=0",
+                // FXAA/SMAA's compute shader uses textureLod, which this
+                // Android glslang path rejects; disable it until that shader
+                // variant is translated for GLES/Vulkan Android.
+                "--dante_smaa=false",
+                // Native Vulkan path: do not allocate/use host 2x MSAA. The
+                // game already performs its own Xenos resolve and this
+                // duplicate sample cost is especially expensive on Adreno.
+                "--native_2x_msaa=false",
+                // Explicitly keep the swap post-process disabled. This is
+                // the native equivalent of removing FXAA/bloom-like screen
+                // effects; the default is none, but make the Android profile
+                // independent of persisted runtime cvars.
+                "--swap_post_effect=none",
+                // Keep the diagnostic tracer off during normal runtime; enable
+                // it only for a focused capture because it adds per-draw work.
+                "--d3d_trace_frames=0",
                 // Match the Vulkan/Xenos compatibility profile used by the
                 // working NFSMW Android port on Adreno devices.
                 "--vulkan_native_shader_features=false",
                 "--render_target_path_vulkan=fbo",
+                // Adreno comparison: traditional render passes can have lower
+                // driver overhead than dynamic rendering for this workload.
+                "--vulkan_dynamic_rendering=false",
+                // Let Vulkan submit at the primary-buffer boundary instead of
+                // forcing extra intermediate submissions on this workload.
+                "--vulkan_submit_on_primary_buffer_end=false",
                 "--vulkan_require_geometry_shader=false",
                 "--vulkan_require_fill_mode_non_solid=false",
                 // FIFO lets the 60 Hz display pace presentation instead of keeping the
-                // Presentation thread busy in immediate/tearing mode.
-                "--vsync=true",
-                "--vulkan_allow_present_mode_immediate=false",
+                // Presentation thread busy in immediate/tearing mode. When the launcher
+                // disables VSync, allow the backend to select IMMEDIATE if available.
+                "--vsync=" + settingVsync,
+                "--vulkan_allow_present_mode_immediate=" + !settingVsync,
                 "--host_present_from_non_ui_thread=false",
                 // Reduce texture sampling cost on the Adreno during the
                 // shader/pipeline warm-up phase.
-                "--anisotropic_override=0",
+                "--anisotropic_override=" + settingAnisotropic,
                 // The base XEX emits a very large number of intentionally
                 // padded vertex fetches during the intro. Keep the diagnostic
                 // scan off on Android so it cannot flood the render thread.
@@ -218,11 +281,12 @@ public final class GameActivity extends SDLActivity implements InputManager.Inpu
                 // Keep a small audio cushion for the game's 256-sample bursts.
                 // Ten frames is still low-latency (~53 ms at 48 kHz) but avoids
                 // starving the stereo Android output during shader/video bursts.
-                "--audio_maxqframes=10",
-                // Synchronous creation is slower during the first load, but
-                // is required by this Adreno path to present the first frame.
-                "--async_shader_compilation=false",
-                "--vulkan_async_skip_incomplete_frames=false",
+                "--audio_maxqframes=" + settingAudioFrames,
+                // Synchronous creation is the verified stable path for this
+                // Adreno profile; async pipeline misses did not improve FPS.
+                "--async_shader_compilation=" + settingAsyncShaders,
+                "--vulkan_pipeline_creation_threads=" + settingPipelineThreads,
+                "--vulkan_async_skip_incomplete_frames=" + settingAsyncShaders,
         };
     }
 }

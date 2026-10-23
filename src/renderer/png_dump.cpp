@@ -1,5 +1,7 @@
 #include "png_dump.h"
 
+#include <rex/cvar.h>
+
 #include "Common/interface/RefCntAutoPtr.hpp"
 #include "Graphics/GraphicsEngine/interface/DeviceContext.h"
 #include "Graphics/GraphicsEngine/interface/RenderDevice.h"
@@ -58,6 +60,12 @@ float HalfToFloat(uint16_t h) {
 }  // namespace
 
 std::filesystem::path FrameDumpDirectory() {
+#if defined(__ANDROID__)
+  const auto user_data_root = rex::cvar::Query<std::string>("user_data_root");
+  if (!user_data_root.empty()) {
+    return std::filesystem::path(user_data_root) / "frame_dump";
+  }
+#endif
 #ifdef _WIN32
   wchar_t module_path[MAX_PATH];
   if (GetModuleFileNameW(nullptr, module_path, MAX_PATH)) {

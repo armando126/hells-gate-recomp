@@ -1,10 +1,20 @@
 #pragma once
 
 #include <memory>
+#include <string_view>
 
 #include <rex/system/interfaces/graphics.h>
 
 namespace renderer {
+
+// Returns true for the custom Dante renderer and its Android compatibility
+// path. The SDK-backed Android baseline is selected separately below.
+bool IsDanteRenderer(std::string_view renderer_name);
+
+// Returns true for renderers that use the SDK Vulkan graphics system directly.
+// android-dante starts from this path; the custom renderer remains available
+// as renderer=dante while it is migrated incrementally.
+bool IsSdkVulkanRenderer(std::string_view renderer_name);
 
 // The graphics system selected by the `renderer` cvar: the SDK's Vulkan
 // backend linked into the exe for "native", nullptr (ReXApp loads the

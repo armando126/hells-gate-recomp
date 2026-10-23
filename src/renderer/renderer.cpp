@@ -13,6 +13,8 @@
 #include "ui_overlay.h"
 #include "vulkan_device.h"
 
+#include "android_perf_trace.h"
+
 #include "Common/interface/RefCntAutoPtr.hpp"
 #include "Primitives/interface/DataBlob.h"
 #include "Graphics/GraphicsEngine/interface/Buffer.h"
@@ -59,12 +61,18 @@
 #include <utility>
 #include <vector>
 
+#if defined(__ANDROID__)
+#include <android/log.h>
+#endif
+
 REXCVAR_DEFINE_INT32(dante_precompile_threads, 0, "Diagnostics",
                      "renderer=dante: threads building the recorded shaders and pipelines at "
                      "launch (0 = all cores but one)")
     .range(0, 64);
 
-REXCVAR_DEFINE_INT32(dante_debug_view, 0, "Diagnostics",
+constexpr int32_t kDanteDebugViewDefault = 0;
+
+REXCVAR_DEFINE_INT32(dante_debug_view, kDanteDebugViewDefault, "Diagnostics",
                      "renderer=dante: 0 presents the front buffer, N presents the N-th "
                      "color host render target (F11 cycles)")
     .range(0, 64);
@@ -1299,7 +1307,11 @@ void StartPrecompile() {
     Precompile& c = g_precompile;
     int32_t forced = REXCVAR_GET(dante_precompile_threads);
     uint32_t threads = forced > 0 ? uint32_t(forced)
+#if REX_PLATFORM_ANDROID
+                                  : std::min(2u, std::max(1u, std::thread::hardware_concurrency() - 1));
+#else
                                   : std::max(1u, std::thread::hardware_concurrency() - 1);
+#endif
     std::atomic<bool> working{true};
     std::thread work([&] {
       g_shader_cache->Precompile(g_pipeline_storage->shaders(), variants, threads, c.cancel,
@@ -1344,17 +1356,22 @@ void PresentTestPattern() {
 bool Start(rex::ui::Window* window, const std::filesystem::path& cache_dir) {
   std::lock_guard lock(g_mutex);
   if (g_device) return true;
+  REXLOG_INFO("DanteDevice: Android backend start entered");
   void* hwnd = window ? window->GetNativeWindowHandle() : nullptr;
+  REXLOG_INFO("DanteDevice: native window handle={}", hwnd);
   if (!hwnd) {
     REXLOG_ERROR("DanteDevice: no game window");
     return false;
   }
+  REXLOG_INFO("DanteDevice: detaching SDK presenter");
   window->SetPresenter(nullptr);
+  REXLOG_INFO("DanteDevice: creating Vulkan device");
   auto device = std::make_unique<VulkanDevice>();
   if (!device->Initialize(hwnd, 1280, 720)) {
     REXLOG_ERROR("DanteDevice: native device initialization failed");
     return false;
   }
+  REXLOG_INFO("DanteDevice: Vulkan device initialized");
   const dl::GraphicsAdapterInfo& adapter = device->RenderDevice()->GetAdapterInfo();
   const dl::RenderDeviceInfo& device_info = device->RenderDevice()->GetDeviceInfo();
   REXLOG_INFO("DanteDevice: GPU {} (vendor {:04X} device {:04X}, {} MB VRAM), Vulkan {}.{}",
@@ -1496,6 +1513,11 @@ void BoundShaderHashes(uint32_t dev, const uint8_t* base, uint64_t& vs, uint64_t
 void AfterClear(const CallArgs& a, const uint8_t* base) {
   std::lock_guard lock(g_mutex);
   if (!g_device) return;
+  static bool logged_first_clear = false;
+  if (!logged_first_clear) {
+    REXLOG_INFO("DanteDevice: first Clear callback received");
+    logged_first_clear = true;
+  }
   FlushDrawLog();
   uint32_t dev = a.r[0];
   uint32_t flags = a.r[3];
@@ -1532,6 +1554,11 @@ void AfterClear(const CallArgs& a, const uint8_t* base) {
 void AfterResolve(const CallArgs& a, const uint8_t* base) {
   std::lock_guard lock(g_mutex);
   if (!g_device) return;
+  static bool logged_first_resolve = false;
+  if (!logged_first_resolve) {
+    REXLOG_INFO("DanteDevice: first Resolve callback received");
+    logged_first_resolve = true;
+  }
   FlushDrawLog();
   ++g_swap_resolves;
   uint32_t dev = a.r[0];
@@ -1708,6 +1735,11 @@ void BeforeDraw(uint32_t device, const uint8_t* base) {
 void AfterDraw(const CallArgs& a, DrawKind kind, const uint8_t* base) {
   std::lock_guard lock(g_mutex);
   if (!g_device || !g_shader_cache || !g_draw_renderer) return;
+  static bool logged_first_draw = false;
+  if (!logged_first_draw) {
+    REXLOG_INFO("DanteDevice: first Draw callback received");
+    logged_first_draw = true;
+  }
   if (kind == DrawKind::kInline) return;  // drawn at EndVertices
   uint32_t dev = a.r[0];
   if (kind == DrawKind::kInlineUP) {
@@ -1758,6 +1790,11 @@ void SetButtonGlyphBindingsSource(std::function<KeyBindings()> source) {
 void AfterSwap(const CallArgs& a, const uint8_t* base, bool log_next_frame) {
   std::lock_guard lock(g_mutex);
   if (!g_device) return;
+  static bool logged_first_swap = false;
+  if (!logged_first_swap) {
+    REXLOG_INFO("DanteDevice: first Swap callback received");
+    logged_first_swap = true;
+  }
   FlushDrawLog();
   FinishReadbacks(base);
   g_logged_run_draws = 0;
@@ -1773,6 +1810,7 @@ void AfterSwap(const CallArgs& a, const uint8_t* base, bool log_next_frame) {
   }
   auto it = g_resolve_targets.find(key);
   bool found = it != g_resolve_targets.end() && it->second.texture;
+  static uint32_t present_debug_logs = 0;
 
   // Debug view: present a color host RT instead of the front buffer.
   dl::ITextureView* debug_view = nullptr;
@@ -1837,6 +1875,25 @@ void AfterSwap(const CallArgs& a, const uint8_t* base, bool log_next_frame) {
     if (it->second.rb_swap) front_swizzle = SwapRedBlueSwizzle(front_swizzle);
     front_view = FrontBufferView(it->second.texture, front_swizzle);
   }
+  if (present_debug_logs < 8) {
+    REXLOG_INFO(
+        "NATIVE-PRESENT f{} debug_view={} targets={} resolves={} front={:08X} key={}x{} fmt={} "
+        "found={} texture={} front_view={}",
+        g_frame, REXCVAR_GET(dante_debug_view), g_render_targets.size(),
+        g_resolve_targets.size(), address, key.width, key.height, key.guest_format, found,
+        found && it->second.texture != nullptr, front_view != nullptr);
+#if defined(__ANDROID__)
+    __android_log_print(ANDROID_LOG_INFO, "HellsgateNative",
+                        "NATIVE-PRESENT f=%u debug=%d targets=%zu resolves=%zu front=%08X "
+                        "key=%ux%u fmt=%u found=%d texture=%d view=%d draws=%u resolves_frame=%u",
+                        static_cast<unsigned>(g_frame), REXCVAR_GET(dante_debug_view),
+                        g_render_targets.size(),
+                        g_resolve_targets.size(), address, key.width, key.height,
+                        key.guest_format, found ? 1 : 0,
+                        found && it->second.texture != nullptr ? 1 : 0, front_view ? 1 : 0,
+                        g_swap_draws, g_swap_resolves);
+#endif
+  }
   ReplayCapture(debug_view ? debug_view : front_view,
                 fmt::format("f{} front={:08X} {}x{} fmt={} rb_swap={} swizzle={:03X} draws={} "
                             "resolves={} dest_info_missing={} new_targets={}{}",
@@ -1875,18 +1932,28 @@ void AfterSwap(const CallArgs& a, const uint8_t* base, bool log_next_frame) {
   }
   if (!g_device->UpdateWindowSize()) return;  // minimized
   const uint32_t present_sync_interval = rex::cvar::Query<bool>("vsync") ? 1 : 0;
+  bool present_ok = false;
   if (debug_view) {
-    g_device->PresentTexture(debug_view, present_sync_interval);
+    present_ok = g_device->PresentTexture(debug_view, present_sync_interval);
   } else if (front_view) {
-    g_device->PresentTexture(front_view, present_sync_interval);
+    present_ok = g_device->PresentTexture(front_view, present_sync_interval);
   } else {
     PresentTestPattern();
+    present_ok = true;
+  }
+  if (present_debug_logs < 8) {
+    REXLOG_INFO("NATIVE-PRESENT f{} source={} result={}", g_frame,
+                debug_view ? "debug" : (front_view ? "front" : "test-pattern"), present_ok);
+    ++present_debug_logs;
   }
   {
     std::lock_guard present_lock(g_present_mutex);
     ++g_present_count.frames;
     g_present_count.last = std::chrono::steady_clock::now();
   }
+#if defined(__ANDROID__)
+  hellsgate::android_perf::CountPresentedFrame();
+#endif
   // New pipelines reach the Vulkan cache file now and then, not only at exit.
   if (g_render_stats.pipelines_created != g_pso_cache_saved_pipelines &&
       std::chrono::steady_clock::now() - g_pso_cache_saved_time > std::chrono::minutes(2)) {

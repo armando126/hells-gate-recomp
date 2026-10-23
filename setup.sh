@@ -61,4 +61,4 @@ apply_patch "DiligentCore" "$diligent_dir" "$root/patches/diligent/diligent-core
 
 echo
 echo "Setup complete."
-echo "Next: follow the Linux build steps in README.md from step 3."
+echo "Next: generate the game sources and build the Android project from android/."

@@ -130,7 +130,12 @@ bool VulkanDevice::Initialize(void* hwnd, uint32_t width, uint32_t height) {
   engine_ci.GraphicsAPIVersion = Diligent::Version{1, 3};
   // Per-draw constant uploads of a full frame (renderer=dante) exceed the 8 MB default.
   engine_ci.DynamicHeapSize = 64u << 20;
-#ifdef NDEBUG
+#if defined(__ANDROID__)
+  // The Android debug APK is used for on-device profiling. Diligent validation
+  // adds validation work and warning traffic to every guest clear/draw, which
+  // starves the guest audio callback on thermally constrained devices.
+  engine_ci.EnableValidation = false;
+#elif defined(NDEBUG)
   engine_ci.EnableValidation = false;
 #else
   engine_ci.EnableValidation = true;

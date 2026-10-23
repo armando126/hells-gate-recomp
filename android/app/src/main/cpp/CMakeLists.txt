@@ -74,7 +74,10 @@ configure_file(
     "${CMAKE_CURRENT_BINARY_DIR}/generated/smaa_shader.h"
     @ONLY)
 
-option(HELLSGATE_TU2_HOOKS "Build hooks for the TU2 function map" OFF)
+# Dante's renderer is driven by the TU2 D3D hooks. Keep these enabled for the
+# Android target; without them the guest and audio run, but the custom renderer
+# never receives Clear/Resolve/Draw/Swap callbacks and the surface stays black.
+option(HELLSGATE_TU2_HOOKS "Build hooks for the TU2 function map" ON)
 
 set(HELLS_GATE_APP_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/android_performance.cpp"

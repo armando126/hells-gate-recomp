@@ -33,15 +33,23 @@ REXCVAR_DEFINE_BOOL(dante_packet_inventory, false, "Diagnostics",
 
 namespace renderer {
 
+bool IsDanteRenderer(std::string_view renderer_name) {
+  return renderer_name == "dante" || renderer_name == "android-dante";
+}
+
+bool IsSdkVulkanRenderer(std::string_view renderer_name) {
+  return renderer_name == "native" || renderer_name == "android-dante";
+}
+
 std::unique_ptr<rex::system::IGraphicsSystem> CreateGraphicsSystem() {
   const std::string renderer = rex::cvar::Query<std::string>("renderer");
-  if (renderer == "xenos" || renderer == "dante") return nullptr;
-  if (renderer == "native") {
+  if (renderer == "xenos") return nullptr;
+  if (IsSdkVulkanRenderer(renderer)) {
 #if REX_HAS_VULKAN
-    REXLOG_INFO("renderer=native: SDK Vulkan backend");
+    REXLOG_INFO("renderer={}: SDK Vulkan backend", renderer);
     return std::make_unique<rex::graphics::vulkan::VulkanGraphicsSystem>();
 #else
-    REXLOG_ERROR("renderer=native requires a Vulkan-enabled SDK build (REXGLUE_USE_VULKAN)");
+    REXLOG_ERROR("renderer={} requires a Vulkan-enabled SDK build (REXGLUE_USE_VULKAN)", renderer);
     return nullptr;
 #endif
   }
@@ -50,7 +58,8 @@ std::unique_ptr<rex::system::IGraphicsSystem> CreateGraphicsSystem() {
 }
 
 void ConfigureSyncOnlyGpu() {
-  if (rex::cvar::Query<std::string>("renderer") != "dante") {
+  const std::string renderer = rex::cvar::Query<std::string>("renderer");
+  if (renderer != "dante") {
     return;
   }
   bool host_off = rex::cvar::SetFlagByName("gpu_host_rendering", "false");

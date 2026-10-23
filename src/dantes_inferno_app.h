@@ -318,7 +318,7 @@ class DantesInfernoApp : public rex::ReXApp {
     HellsgateAndroidLog("OnPostSetup renderer=%s", renderer_name.c_str());
 #endif
     if (renderer_name == "dante") {
-      REXLOG_INFO("Dante Android: native Vulkan renderer selected");
+      REXLOG_INFO("Dante renderer selected: {}", renderer_name);
       const bool renderer_started = renderer::Start(window(), cache_root());
 #if REX_PLATFORM_ANDROID
       HellsgateAndroidLog("Dante renderer start=%s window=%p", renderer_started ? "ok" : "failed",

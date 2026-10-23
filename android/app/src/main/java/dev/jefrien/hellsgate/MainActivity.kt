@@ -19,6 +19,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -27,6 +29,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
@@ -41,6 +44,15 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.io.File
+
+private data class PerformanceSettings(
+    val vsync: Boolean = true,
+    val asyncShaders: Boolean = false,
+    val fastCores: Boolean = true,
+    val anisotropic: Int = 0,
+    val audioFrames: Int = 10,
+    val pipelineThreads: Int = -1,
+)
 
 class MainActivity : ComponentActivity() {
     private data class CopyStats(val bytes: Long, val files: Long)
@@ -61,6 +73,15 @@ class MainActivity : ComponentActivity() {
             WindowManager.LayoutParams.FLAG_FULLSCREEN,
         )
         val hasImportedGame = File(filesDir, "game/default.xex").isFile
+        val preferences = getSharedPreferences("performance", MODE_PRIVATE)
+        val initialSettings = PerformanceSettings(
+            vsync = preferences.getBoolean("vsync", true),
+            asyncShaders = preferences.getBoolean("async_shaders", false),
+            fastCores = preferences.getBoolean("fast_cores", true),
+            anisotropic = preferences.getInt("anisotropic", 0),
+            audioFrames = preferences.getInt("audio_frames", 10),
+            pipelineThreads = preferences.getInt("pipeline_threads", -1),
+        )
         setContent {
             var gameImportStatus by remember {
                 mutableStateOf(
@@ -69,6 +90,7 @@ class MainActivity : ComponentActivity() {
                 )
             }
             var gameImportProgress by remember { mutableStateOf<Float?>(null) }
+            var performanceSettings by remember { mutableStateOf(initialSettings) }
             updateGameImportStatus = { message, progress ->
                 gameImportStatus = message
                 gameImportProgress = progress
@@ -81,6 +103,18 @@ class MainActivity : ComponentActivity() {
                     onChooseGameFolder = { gameFolderPicker.launch(null) },
                     gameImportStatus = gameImportStatus,
                     gameImportProgress = gameImportProgress,
+                    performanceSettings = performanceSettings,
+                    onPerformanceSettingsChanged = { settings ->
+                        performanceSettings = settings
+                        preferences.edit()
+                            .putBoolean("vsync", settings.vsync)
+                            .putBoolean("async_shaders", settings.asyncShaders)
+                            .putBoolean("fast_cores", settings.fastCores)
+                            .putInt("anisotropic", settings.anisotropic)
+                            .putInt("audio_frames", settings.audioFrames)
+                            .putInt("pipeline_threads", settings.pipelineThreads)
+                            .apply()
+                    },
                 )
             }
         }
@@ -238,9 +272,15 @@ private fun HellsgateTheme(content: @Composable () -> Unit) {
     MaterialTheme(
         colorScheme = darkColorScheme(
             primary = Color(0xFFD84A3A),
+            onPrimary = Color.White,
             secondary = Color(0xFFE0A24A),
+            onSecondary = Color(0xFF211313),
             background = Color(0xFF0D0909),
+            onBackground = Color.White,
             surface = Color(0xFF211313),
+            onSurface = Color.White,
+            surfaceVariant = Color(0xFF382020),
+            onSurfaceVariant = Color(0xFFE5CACA),
         ),
         content = content,
     )
@@ -252,6 +292,8 @@ private fun HellsgateApp(
     onChooseGameFolder: () -> Unit,
     gameImportStatus: String,
     gameImportProgress: Float?,
+    performanceSettings: PerformanceSettings,
+    onPerformanceSettingsChanged: (PerformanceSettings) -> Unit,
 ) {
     var showSettings by remember { mutableStateOf(false) }
     var startingGame by remember { mutableStateOf(false) }
@@ -263,9 +305,13 @@ private fun HellsgateApp(
         Surface(
             modifier = Modifier.fillMaxSize(),
             color = Color(0xD90D0909),
+            contentColor = Color.White,
         ) {
                 Column(
-                    modifier = Modifier.fillMaxSize().padding(28.dp),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState())
+                        .padding(28.dp),
                     verticalArrangement = Arrangement.Center,
                 ) {
                 Text(
@@ -291,6 +337,7 @@ private fun HellsgateApp(
                     modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(
                         containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
+                        contentColor = Color.White,
                     ),
                 ) {
                     Column(Modifier.padding(18.dp)) {
@@ -336,10 +383,59 @@ private fun HellsgateApp(
                         }
                         if (showSettings) {
                             Spacer(Modifier.height(16.dp))
-                            Text("Resolución: nativa del dispositivo")
-                            Text("Renderer: Vulkan", color = Color.White.copy(alpha = 0.65f))
+                            Text("Perfil Vulkan Android", fontWeight = FontWeight.SemiBold)
+                            PerformanceSwitch(
+                                "VSync (FIFO)", performanceSettings.vsync,
+                            ) { onPerformanceSettingsChanged(performanceSettings.copy(vsync = it)) }
+                            PerformanceSwitch(
+                                "Shaders en segundo plano", performanceSettings.asyncShaders,
+                            ) { onPerformanceSettingsChanged(performanceSettings.copy(asyncShaders = it)) }
+                            PerformanceSwitch(
+                                "Núcleos rápidos", performanceSettings.fastCores,
+                            ) { onPerformanceSettingsChanged(performanceSettings.copy(fastCores = it)) }
+                            OutlinedButton(onClick = {
+                                val next = when (performanceSettings.anisotropic) {
+                                    0 -> 1
+                                    1 -> 2
+                                    2 -> 3
+                                    3 -> 4
+                                    4 -> 5
+                                    5 -> 0
+                                    else -> 0
+                                }
+                                onPerformanceSettingsChanged(performanceSettings.copy(anisotropic = next))
+                            }) {
+                                Text("Filtro anisotrópico: ${anisotropicLabel(performanceSettings.anisotropic)}")
+                            }
+                            OutlinedButton(onClick = {
+                                val next = when (performanceSettings.audioFrames) {
+                                    6 -> 10
+                                    10 -> 16
+                                    else -> 6
+                                }
+                                onPerformanceSettingsChanged(performanceSettings.copy(audioFrames = next))
+                            }) {
+                                Text("Buffer de audio: ${performanceSettings.audioFrames} frames")
+                            }
+                            OutlinedButton(onClick = {
+                                val next = when (performanceSettings.pipelineThreads) {
+                                    -1 -> 2
+                                    2 -> 4
+                                    4 -> -1
+                                    else -> -1
+                                }
+                                onPerformanceSettingsChanged(performanceSettings.copy(pipelineThreads = next))
+                            }) {
+                                Text("Hilos de pipelines: ${pipelineThreadsLabel(performanceSettings.pipelineThreads)}")
+                            }
+                            Text("Resolución interna: 1280×720 estable", color = Color.White.copy(alpha = 0.65f))
+                            Text("Renderer: Vulkan SDK", color = Color.White.copy(alpha = 0.65f))
                             Text(
-                                "Controles táctiles: próximamente",
+                                "Los cambios se aplican al volver a iniciar el juego.",
+                                color = Color.White.copy(alpha = 0.65f),
+                            )
+                            Text(
+                                "Resolución fraccional y límite FPS requieren soporte adicional del backend.",
                                 color = Color.White.copy(alpha = 0.65f),
                             )
                         }
@@ -348,7 +444,35 @@ private fun HellsgateApp(
         }
     }
 }
+
 }
+
+@Composable
+private fun PerformanceSwitch(
+    label: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Text(label)
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
+    }
+}
+
+private fun anisotropicLabel(value: Int): String = when (value) {
+    0 -> "Off"
+    1 -> "1x"
+    2 -> "2x"
+    3 -> "4x"
+    4 -> "8x"
+    5 -> "16x"
+    else -> "Off"
+}
+
+private fun pipelineThreadsLabel(value: Int): String = if (value < 0) "Auto" else value.toString()
 
 @Preview(showBackground = true)
 @Composable
@@ -359,6 +483,8 @@ private fun HellsgatePreview() {
             onChooseGameFolder = {},
             gameImportStatus = "Preview",
             gameImportProgress = null,
+            performanceSettings = PerformanceSettings(),
+            onPerformanceSettingsChanged = {},
         )
     }
 }

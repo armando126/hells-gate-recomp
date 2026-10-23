@@ -188,6 +188,8 @@ struct TextureCache::Impl {
   std::set<uint32_t> reported_formats;
   std::vector<uint8_t> staging;
   uint32_t uploads = 0, resolved_hits = 0, unsupported = 0;
+  uint32_t texture_create_failures = 0, view_create_failures = 0;
+  uint32_t content_diag = 0;
   uint64_t uploaded_bytes = 0;
 
   // format: view format for typeless textures (UNKNOWN = the texture's own).
@@ -205,6 +207,11 @@ struct TextureCache::Impl {
     desc.Swizzle = ComponentMapping(swizzle);
     dl::RefCntAutoPtr<dl::ITextureView> view;
     texture->CreateView(desc, &view);
+    if (!view && view_create_failures++ < 8) {
+      REXLOG_ERROR("NATIVE-TEX CreateView failed texture={} format={} dimension={} swizzle={:X}",
+                   texture->GetDesc().Name ? texture->GetDesc().Name : "<unnamed>",
+                   uint32_t(format), uint32_t(dimension), swizzle);
+    }
     views.emplace(key, view);
     return view;
   }
@@ -321,7 +328,15 @@ struct TextureCache::Impl {
       dl::TextureData data{const_cast<dl::TextureSubResData*>(levels.subresources.data()),
                            uint32_t(levels.subresources.size())};
       device->CreateTexture(desc, &data, &entry.texture);
-      if (!entry.texture) return false;
+      if (!entry.texture) {
+        if (texture_create_failures++ < 8) {
+          REXLOG_ERROR(
+              "NATIVE-TEX CreateTexture failed {}x{} array={} levels={} format={} typeless={}",
+              levels.width, levels.height, levels.array_size, levels.levels, uint32_t(host.format),
+              uint32_t(desc.Format));
+        }
+        return false;
+      }
     } else {
       size_t index = 0;
       for (uint32_t slice = 0; slice < levels.array_size; ++slice) {
@@ -378,6 +393,10 @@ dl::ITextureView* TextureCache::GetView2D(const uint32_t fetch_dwords[6], const 
   if (dl::ITexture* resolved =
           m.resolve_lookup(address, width, height, uint32_t(info.format), rb_swap)) {
     ++m.resolved_hits;
+    if (m.resolved_hits <= 8) {
+      REXLOG_INFO("NATIVE-TEX resolve view address={:08X} {}x{} fmt={} rb_swap={}", address,
+                  width, height, uint32_t(info.format), rb_swap);
+    }
     src_kind = 'R';
     if (rb_swap) swizzle = SwapRedBlueSwizzle(swizzle);
     return m.View(resolved, swizzle);
@@ -395,6 +414,11 @@ dl::ITextureView* TextureCache::GetView2D(const uint32_t fetch_dwords[6], const 
   }
   uint32_t size = info.extent.all_blocks() * host.bytes_per_block;
   if (!guest::IsPhysicalRange(address, size)) return nullptr;
+  if (m.uploads < 8) {
+    REXLOG_INFO("NATIVE-TEX upload view address={:08X} {}x{} fmt={} tiled={} pitch={} bytes={}",
+                address, width, height, uint32_t(info.format), uint32_t(fetch.tiled),
+                uint32_t(fetch.pitch), size);
+  }
 
   // The texture is identified by its address, format, size and mip setup.
   // (dword 0: pitch and tiling; 1: base and format; 2: size; 5: mip address).
@@ -428,6 +452,16 @@ dl::ITextureView* TextureCache::GetView2D(const uint32_t fetch_dwords[6], const 
   if (entry.texture && entry.content_hash == hash) return view(nullptr);
   entry.content_hash = hash;
   m.LoadLevels(fetch, host, base, levels, hash);
+  if (m.content_diag < 8 && !levels.data.empty()) {
+    auto byte = [&](size_t index) -> unsigned {
+      return index < levels.data.size() ? levels.data[index] : 0;
+    };
+    REXLOG_INFO(
+        "NATIVE-TEX loaded address={:08X} {}x{} fmt={} bytes={} hash={:016X} data={:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
+        address, levels.width, levels.height, uint32_t(info.format), levels.data.size(), hash,
+        byte(0), byte(1), byte(2), byte(3), byte(4), byte(5), byte(6), byte(7));
+    ++m.content_diag;
+  }
   if (!m.StoreLevels(entry, levels, host, dl::RESOURCE_DIM_TEX_2D_ARRAY, "GuestTexture")) {
     m.textures.erase(key);
     return nullptr;

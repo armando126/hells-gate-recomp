@@ -7,6 +7,7 @@
 #include "guest_gpu_state.h"
 #include "renderdoc_capture.h"
 #include "renderer.h"
+#include "renderer_config.h"
 #include "state_verifier.h"
 
 #include <rex/cvar.h>
@@ -159,7 +160,8 @@ void TraceFrameBoundary() {
 
 // Logs the guest frame rate every 5 s (pacing check for renderer changes).
 void FrameHeartbeat() {
-  static const bool enabled = rex::cvar::Query<std::string>("renderer") == "dante";
+  static const bool enabled =
+      renderer::IsDanteRenderer(rex::cvar::Query<std::string>("renderer"));
   if (!enabled) return;
   using Clock = std::chrono::steady_clock;
   static Clock::time_point window_start = Clock::now();

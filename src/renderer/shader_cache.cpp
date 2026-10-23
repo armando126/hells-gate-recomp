@@ -265,9 +265,16 @@ struct ShaderCache::Impl {
     if (!entry.shader) {
       entry.shader = std::make_unique<rg::SpirvShader>(type, hash, code.ucode, code.dwords);
       entry.shader->AnalyzeUcode(disasm_buffer);
+      REXLOG_INFO("NATIVE-SHADER type={} hash={:016X} colors={:#x} depth={} interp={:#x}",
+                  type == rg::xenos::ShaderType::kVertex ? "VS" : "PS", hash,
+                  entry.shader->writes_color_targets(), entry.shader->writes_depth(),
+                  entry.shader->writes_interpolators());
       if (storage) storage->AddShader(uint32_t(type), hash, code.ucode, code.dwords);
       if (REXCVAR_GET(dante_dump_shaders)) {
-        auto path = FrameDumpDirectory() /
+        const auto dump_directory = FrameDumpDirectory();
+        std::error_code ec;
+        std::filesystem::create_directories(dump_directory, ec);
+        auto path = dump_directory /
                     fmt::format("{}_{:016X}.txt",
                                 type == rg::xenos::ShaderType::kVertex ? "vs" : "ps", hash);
         if (std::FILE* f = std::fopen(path.string().c_str(), "wb")) {

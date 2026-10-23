@@ -3,6 +3,7 @@
 #include "guest_gpu_state.h"
 #include "guest_memory.h"
 #include "pipeline_storage.h"
+#include "png_dump.h"
 #include "render_stats.h"
 #include "texture_cache.h"
 
@@ -42,6 +43,10 @@
 #include <unordered_map>
 #include <vector>
 
+#if defined(__ANDROID__)
+#include <android/log.h>
+#endif
+
 namespace renderer {
 namespace {
 
@@ -50,6 +55,12 @@ namespace rg = rex::graphics;
 namespace reg = rex::graphics::reg;
 namespace xenos = rex::graphics::xenos;
 using Translator = rg::SpirvShaderTranslator;
+
+#if defined(__ANDROID__)
+uint32_t g_android_draw_diag = 0;
+uint32_t g_android_color_diag = 0;
+uint32_t g_android_state_diag = 0;
+#endif
 
 constexpr uint32_t kIndexRingSize = 32u * 1024 * 1024;
 
@@ -903,10 +914,42 @@ bool DrawRenderer::Draw(const rg::RegisterFile& regs, const TranslatedShaders& s
     g.flags = p.flags;
   }
   Pipeline* pipeline = m.GetPipeline(key, shaders, m.storage ? &record : nullptr);
+#if defined(__ANDROID__)
+  const bool color_candidate = targets.color_count != 0 && key.color_mask != 0;
+#else
+  constexpr bool color_candidate = false;
+#endif
   if (!pipeline) {
     ++m.skipped_pipeline;
+#if defined(__ANDROID__)
+    if (color_candidate && g_android_color_diag < 3) {
+      __android_log_print(ANDROID_LOG_INFO, "HellsgateNative",
+                          "NATIVE-COLOR pipeline-failed colors=%u mask=%04X targets=%ux%u vs=%016llX ps=%016llX",
+                          targets.color_count, key.color_mask, targets.width, targets.height,
+                          static_cast<unsigned long long>(shaders.vertex_key),
+                          static_cast<unsigned long long>(shaders.pixel_key));
+      ++g_android_color_diag;
+    }
+#endif
     return false;
   }
+
+#if defined(__ANDROID__)
+  if (g_android_state_diag < 8) {
+    __android_log_print(
+        ANDROID_LOG_INFO, "HellsgateNative",
+        "NATIVE-STATE draw=%u colors=%u mask=%04X ps_color=%X ps_depth=%d textures=%zu samplers=%zu "
+        "rt=%ux%u depth=%d/%d blend=%08X vs=%016llX ps=%016llX",
+        g_android_state_diag, targets.color_count, key.color_mask,
+        shaders.pixel_info ? shaders.pixel_info->writes_color_targets() : 0,
+        shaders.pixel_info && shaders.pixel_info->writes_depth() ? 1 : 0, pipeline->textures.size(),
+        pipeline->samplers.size(), targets.width, targets.height, key.depth_enable ? 1 : 0,
+        key.depth_write ? 1 : 0, key.blend[0],
+        static_cast<unsigned long long>(shaders.vertex_info->ucode_data_hash()),
+        static_cast<unsigned long long>(shaders.pixel_info ? shaders.pixel_info->ucode_data_hash() : 0));
+    ++g_android_state_diag;
+  }
+#endif
 
   // Textures and samplers of this draw.
   const uint32_t* fetch_base = &regs.values[rg::XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0];
@@ -927,7 +970,7 @@ bool DrawRenderer::Draw(const rg::RegisterFile& regs, const TranslatedShaders& s
         t.dimension == '3'   ? m.textures->GetView3D(fetch, base, m.frame, &source, want_signed)
         : t.dimension == 'c' ? m.textures->GetViewCube(fetch, base, m.frame, &source, want_signed)
                              : m.textures->GetView2D(fetch, base, m.frame, &source, want_signed);
-    if (log) {
+    if (log || color_candidate) {
       texture_log += fmt::format(" t{}{}={:08X}:{}x{}:f{}{}", t.fetch_constant,
                                  t.is_signed ? (want_signed ? "s" : "s~") : "",
                                  fetch[1] & 0xFFFFF000u, (fetch[2] & 0x1FFF) + 1,
@@ -1012,6 +1055,48 @@ bool DrawRenderer::Draw(const rg::RegisterFile& regs, const TranslatedShaders& s
   m.context->SetBlendFactors(blend_constant);
   m.context->CommitShaderResources(pipeline->srb, dl::RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
 
+#if defined(__ANDROID__)
+  if (color_candidate && g_android_color_diag < 3) {
+    const auto& rt_desc = targets.color[0]->GetTexture()->GetDesc();
+    __android_log_print(
+        ANDROID_LOG_INFO, "HellsgateNative",
+        "NATIVE-COLOR candidate=%u rt=%ux%u fmt=%u colors=%u mask=%04X vp=%u,%u %ux%u z=%.3f..%.3f "
+        "sc=%d,%d-%d,%d depth=%d/%d func=%u blend=%08X writes=%X depth_out=%d vs=%016llX ps=%016llX tex=%s",
+        g_android_color_diag, rt_desc.Width, rt_desc.Height, static_cast<unsigned>(rt_desc.Format),
+        targets.color_count, key.color_mask, viewport.xy_offset[0], viewport.xy_offset[1],
+        viewport.xy_extent[0], viewport.xy_extent[1], viewport.z_min, viewport.z_max, rect.left,
+        rect.top, rect.right, rect.bottom, key.depth_enable ? 1 : 0, key.depth_write ? 1 : 0,
+        key.depth_func, key.blend[0], shaders.pixel_info->writes_color_targets(),
+        shaders.pixel_info->writes_depth() ? 1 : 0,
+        static_cast<unsigned long long>(shaders.vertex_info->ucode_data_hash()),
+        static_cast<unsigned long long>(shaders.pixel_info->ucode_data_hash()), texture_log.c_str());
+    const uint32_t* pixel_constants =
+        &regs.values[rg::XE_GPU_REG_SHADER_CONSTANT_256_X + (253u << 2)];
+    __android_log_print(ANDROID_LOG_INFO, "HellsgateNative",
+                        "NATIVE-COLOR constants c253=%08X,%08X,%08X,%08X c254=%08X,%08X,%08X,%08X c255=%08X,%08X,%08X,%08X",
+                        pixel_constants[0], pixel_constants[1], pixel_constants[2], pixel_constants[3],
+                        pixel_constants[4], pixel_constants[5], pixel_constants[6], pixel_constants[7],
+                        pixel_constants[8], pixel_constants[9], pixel_constants[10], pixel_constants[11]);
+    for (const auto& binding : shaders.vertex_info->vertex_bindings()) {
+      const uint32_t register_base = rg::XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 +
+                                     binding.fetch_constant * 2;
+      const uint32_t d0 = regs.values[register_base];
+      const uint32_t d1 = regs.values[register_base + 1];
+      const uint32_t address = d0 & 0xFFFFFFFCu;
+      const uint8_t* data = guest::PhysicalPtr(base, address);
+      uint32_t words[4] = {};
+      if (data && guest::IsPhysicalRange(address, sizeof(words))) {
+        std::memcpy(words, data, sizeof(words));
+      }
+      __android_log_print(ANDROID_LOG_INFO, "HellsgateNative",
+                          "NATIVE-COLOR vertex vf=%u addr=%08X size=%u stride=%u raw=%08X,%08X,%08X,%08X",
+                          binding.fetch_constant, address, ((d1 >> 2) & 0xFFFFFF) * 4,
+                          binding.stride_words * 4, words[0], words[1], words[2], words[3]);
+      break;
+    }
+  }
+#endif
+
   if (!indices.empty()) {
     m.context->SetIndexBuffer(m.index_ring, index_offset,
                               dl::RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
@@ -1024,6 +1109,24 @@ bool DrawRenderer::Draw(const rg::RegisterFile& regs, const TranslatedShaders& s
     attribs.NumVertices = count;
     m.context->Draw(attribs);
   }
+#if defined(__ANDROID__)
+  if (g_android_draw_diag < 100) {
+    __android_log_print(ANDROID_LOG_INFO, "HellsgateNative",
+                        "NATIVE-DRAW submitted colors=%u targets=%ux%u indexed=%d count=%u",
+                        targets.color_count, targets.width, targets.height, indexed ? 1 : 0,
+                        count);
+    ++g_android_draw_diag;
+  }
+  if (color_candidate && g_android_color_diag < 3) {
+    const uint32_t capture = g_android_color_diag++;
+    const auto path = FrameDumpDirectory() /
+                      fmt::format("android_color_draw_{}.png", capture);
+    const bool dumped = DumpTexturePng(m.device, m.context, targets.color[0]->GetTexture(), path);
+    __android_log_print(ANDROID_LOG_INFO, "HellsgateNative",
+                        "NATIVE-COLOR after candidate=%u dump=%d path=%s", capture,
+                        dumped ? 1 : 0, path.string().c_str());
+  }
+#endif
   ++m.draws;
   if (log) {
     REXLOG_INFO(
